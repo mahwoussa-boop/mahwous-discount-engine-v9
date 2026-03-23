@@ -444,3 +444,57 @@ def export_salla_csv(results: list[MatchResult]) -> bytes:
     buf.write("بيانات المنتج" + "," * (len(cols) - 1) + "\n")
     df.to_csv(buf, index=False, encoding="utf-8")
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  GEMINI ORACLE (L4-LLM) — Stub for compatibility with app.py
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GeminiOracle:
+    """
+    LLM Oracle for final verification of gray-zone products.
+    Uses OpenAI-compatible API (gpt-4.1-mini) for cost efficiency.
+    Falls back gracefully if no API key is set.
+    """
+    def __init__(self, api_key: str = ""):
+        self.client = None
+        try:
+            from openai import OpenAI
+            self.client = OpenAI()
+        except Exception:
+            pass
+
+    def verify(self, comp_name: str, store_name: str) -> str:
+        """Returns 'duplicate', 'new', or 'review'."""
+        if not self.client:
+            return "review"
+        prompt = (
+            f"Are these the same product? Reply with ONE word only: 'duplicate' or 'new'.\n"
+            f"Product A: {comp_name}\n"
+            f"Product B: {store_name}"
+        )
+        for attempt in range(3):
+            try:
+                response = self.client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=20,
+                )
+                answer = response.choices[0].message.content.strip().lower()
+                if "duplicate" in answer:
+                    return "duplicate"
+                if "new" in answer:
+                    return "new"
+                return "review"
+            except Exception as e:
+                log.error(f"GeminiOracle attempt {attempt+1} failed: {e}")
+                time.sleep(2 * (attempt + 1))
+        return "review"
+
+
+def export_brands_csv(brands: list[str]) -> bytes:
+    """Export brands list as a UTF-8 CSV file."""
+    df = pd.DataFrame({"اسم الماركة": brands})
+    buf = io.StringIO()
+    df.to_csv(buf, index=False, encoding="utf-8")
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
