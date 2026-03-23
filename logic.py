@@ -36,6 +36,11 @@ except ImportError:
     _GENAI_OK = False
 
 try:
+    import os
+except ImportError:
+    pass
+
+try:
     import faiss
     _FAISS_OK = True
 except ImportError:
@@ -250,13 +255,28 @@ class ReverseLookup:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class MahwousEngine:
-    def __init__(self, semantic_index: SemanticIndex, brands_list: list[str] = []):
+    def __init__(
+        self,
+        semantic_index: SemanticIndex,
+        brands_list: list[str] = [],
+        gemini_oracle=None,
+        search_api_key: str = "",
+        search_cx: str = "",
+        fetch_images: bool = False,
+    ):
         self.idx = semantic_index
         self.brands = brands_list
+        self.gemini_oracle = gemini_oracle
+        self.search_api_key = search_api_key
+        self.search_cx = search_cx
+        self.fetch_images = fetch_images
         self.llm_client = None
-        if _GENAI_OK and os.environ.get("OPENAI_API_KEY"):
+        try:
+            import os
             from openai import OpenAI
             self.llm_client = OpenAI()
+        except Exception:
+            pass
 
     def _llm_batch_verify(self, batch: list[MatchResult]) -> list[str]:
         """Verifies a batch of 20 products via LLM with Retry Logic and Error Handling."""
@@ -285,14 +305,26 @@ class MahwousEngine:
                 time.sleep(2 * (attempt + 1)) # Exponential backoff
         return ["review"] * len(batch)
 
-    def run(self, store_df: pd.DataFrame, comp_df: pd.DataFrame, use_llm: bool = False) -> tuple[list[MatchResult], list[MatchResult], list[MatchResult]]:
+    def run(
+        self,
+        store_df: pd.DataFrame,
+        comp_df: pd.DataFrame,
+        use_llm: bool = False,
+        progress_cb: Optional[Callable] = None,
+        log_cb: Optional[Callable] = None,
+    ) -> tuple[list[MatchResult], list[MatchResult], list[MatchResult]]:
+        def _log(msg):
+            if log_cb: log_cb(msg)
+            else: log.info(msg)
         store_names = store_df["product_name"].tolist()
         store_imgs  = store_df.get("image_url", pd.Series([""] * len(store_df))).tolist()
         store_feats = {name: FeatureParser.parse(name, brands_list=self.brands) for name in store_names}
         
         new_opps, duplicates, reviews = [], [], []
         
+        total = len(comp_df)
         for i, (_, row) in enumerate(comp_df.iterrows()):
+            if progress_cb: progress_cb(i, total, str(row.get("product_name", "")))
             comp_name = str(row.get("product_name","")).strip()
             comp_img  = str(row.get("image_url","")).strip()
             
@@ -425,11 +457,13 @@ class SemanticIndex:
     MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
     def __init__(self, model):
         self._model, self._index, self._store_names = model, None, []
-    def build(self, store_df: pd.DataFrame):
+    def build(self, store_df: pd.DataFrame, progress_cb: Optional[Callable] = None):
         self._store_names = store_df["product_name"].tolist()
-        embeddings = self._model.encode(self._store_names, normalize_embeddings=True)
+        if progress_cb: progress_cb(f"⏳ جاري ترميز {len(self._store_names):,} منتج...")
+        embeddings = self._model.encode(self._store_names, normalize_embeddings=True, show_progress_bar=False)
         self._index = faiss.IndexFlatIP(embeddings.shape[1])
         self._index.add(embeddings.astype("float32"))
+        if progress_cb: progress_cb(f"✅ FAISS بُني: {len(self._store_names):,} متجه")
     def search(self, query: str, k: int = 3):
         if self._index is None: return []
         qvec = self._model.encode([query], normalize_embeddings=True).astype("float32")
