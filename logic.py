@@ -30,10 +30,15 @@ from rapidfuzz import fuzz as rfuzz
 from rapidfuzz import process as rprocess
 
 try:
-    import google.generativeai as genai
+    from google import genai as _google_genai
     _GENAI_OK = True
 except ImportError:
-    _GENAI_OK = False
+    try:
+        import google.generativeai as _google_genai
+        _GENAI_OK = True
+    except ImportError:
+        _google_genai = None
+        _GENAI_OK = False
 
 try:
     import os
@@ -435,15 +440,40 @@ def load_competitor_products(files: list) -> pd.DataFrame:
         try:
             df = _read_csv(f, low_memory=False, dtype=str)
             df.columns = [str(c).strip() for c in df.columns]
-            name_h, img_h, price_h = ["name","اسم","productcard"], ["src","image","img","صورة"], ["price","سعر"]
-            nc = next((c for c in df.columns if any(h in c.lower() for h in name_h)), df.columns[2] if len(df.columns)>2 else None)
-            ic = next((c for c in df.columns if any(h in c.lower() for h in img_h)), df.columns[1] if len(df.columns)>1 else None)
-            pc = next((c for c in df.columns if any(h in c.lower() for h in price_h)), df.columns[3] if len(df.columns)>3 else None)
+            # البحث الشامل عن عمود الاسم في ملفات المنافسين بأي صيغة
+            name_keywords = ["name", "اسم", "productcard", "product", "title", "عنوان", "منتج", "المنتج"]
+            img_keywords  = ["src", "image", "img", "صورة", "photo", "picture", "url"]
+            price_keywords = ["price", "سعر", "cost", "تكلفة", "ثمن"]
+            
+            def _find_col(keywords, fallback_idx=None):
+                for c in df.columns:
+                    cl = c.lower()
+                    if any(h in cl for h in keywords):
+                        return c
+                if fallback_idx is not None and len(df.columns) > fallback_idx:
+                    return df.columns[fallback_idx]
+                return None
+            
+            nc = _find_col(name_keywords, 2)
+            ic = _find_col(img_keywords, 1)
+            pc = _find_col(price_keywords, 3)
+            
+            if nc is None:
+                log.warning(f"load_competitor: لم يُعثر على عمود اسم في {getattr(f, 'name', str(f))} | الأعمدة: {list(df.columns)[:8]}")
+                continue
+            
             frame = pd.DataFrame()
-            frame["product_name"], frame["image_url"], frame["price"] = df[nc], df[ic], df[pc]
-            frame["source_file"] = str(f)
-            frames.append(frame)
-        except: pass
+            frame["product_name"] = df[nc].fillna("").astype(str)
+            frame["image_url"]    = df[ic].fillna("").astype(str) if ic else ""
+            frame["price"]        = df[pc].fillna("").astype(str) if pc else ""
+            frame["source_file"]  = getattr(f, 'name', str(f))
+            frame = frame[frame["product_name"].str.strip() != ""]
+            if not frame.empty:
+                frames.append(frame)
+            else:
+                log.warning(f"load_competitor: الملف فارغ بعد التصفية: {getattr(f, 'name', str(f))}")
+        except Exception as e:
+            log.error(f"load_competitor error: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 def load_brands(file) -> list[str]:
